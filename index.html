@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>LEDGER — Alpaca Activity Terminal</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -279,6 +279,19 @@
   </div>
 
 <script>
+/* =========================================================
+   Verificación de librerías externas (Chart.js, SheetJS)
+   ========================================================= */
+window.addEventListener("DOMContentLoaded", ()=>{
+  const missing = [];
+  if (typeof Chart === "undefined") missing.push("Chart.js (gráficos)");
+  if (typeof XLSX === "undefined") missing.push("SheetJS (exportar a Excel)");
+  if (missing.length){
+    alert("No se pudieron cargar estas librerías: " + missing.join(", ") +
+      ". Revisa tu conexión a internet — la página necesita descargarlas la primera vez que la abres.");
+  }
+});
+
 /* =========================================================
    Almacenamiento cifrado de credenciales (AES-GCM + PBKDF2)
    ========================================================= */
