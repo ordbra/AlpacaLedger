@@ -115,6 +115,7 @@
   .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;}
   .chartcard h3{margin:0 0 12px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);font-weight:600;}
   .chartcard .canvaswrap{position:relative;height:220px;}
+  .chartcard .canvaswrap.tall{height:280px;}
 
   .tablecard{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
   .tablecard-head{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;padding:14px 16px;border-bottom:1px solid var(--line);}
@@ -243,6 +244,11 @@
         <h3>Saldo acumulado</h3>
         <div class="canvaswrap"><canvas id="chartCumulative"></canvas></div>
       </div>
+    </div>
+
+    <div class="chartcard full" style="margin-bottom:16px;">
+      <h3>Secuencia de operaciones — impacto en el saldo</h3>
+      <div class="canvaswrap tall"><canvas id="chartSequence"></canvas></div>
     </div>
 
     <div class="tablecard">
@@ -570,6 +576,95 @@ function aggregateByDay(rows){
   return { days, daily, cumulative };
 }
 
+function aggregateBySequence(rows){
+  // Ordena cronológicamente ascendente (la más antigua primero) para que la secuencia tenga sentido
+  const sorted = rows
+    .filter(a => {
+      const m = parseFloat(a.net_amount || 0);
+      return !isNaN(m) && (a.transaction_time || a.date);
+    })
+    .sort((a,b) => new Date(a.transaction_time || a.date) - new Date(b.transaction_time || b.date));
+
+  let acumulado = 0;
+  const labels = [], values = [], meta = [];
+
+  sorted.forEach((a, i) => {
+    const monto = parseFloat(a.net_amount || 0);
+    acumulado += monto;
+    labels.push(String(i + 1));
+    values.push(Math.round(acumulado * 100) / 100);
+    meta.push({
+      fecha: (a.transaction_time || a.date || "").toString().slice(0,19).replace("T"," "),
+      tipo: a.activity_type || "-",
+      simbolo: a.symbol || "-",
+      lado: a.side || "-",
+      monto: Math.round(monto * 100) / 100
+    });
+  });
+
+  return { labels, values, meta };
+}
+
+let sequenceChart;
+
+function renderSequenceChart(rows){
+  const { labels, values, meta } = aggregateBySequence(rows);
+  const gridColor = "#2c313a";
+
+  if(sequenceChart) sequenceChart.destroy();
+
+  sequenceChart = new Chart(document.getElementById("chartSequence"), {
+    type:"line",
+    data:{
+      labels,
+      datasets:[{
+        data: values,
+        borderColor:"#6fa8ff",
+        backgroundColor:"rgba(111,168,255,0.10)",
+        fill:true,
+        tension:0.15,
+        pointRadius: values.length > 80 ? 0 : 2.5,
+        pointHoverRadius:6,
+        pointBackgroundColor: meta.map(m => m.monto >= 0 ? "#3ecf8e" : "#ff6b6b"),
+        pointBorderColor: meta.map(m => m.monto >= 0 ? "#3ecf8e" : "#ff6b6b"),
+        borderWidth:2
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:"index", intersect:false },
+      plugins:{
+        legend:{ display:false },
+        tooltip:{
+          callbacks:{
+            title: (items) => {
+              const m = meta[items[0].dataIndex];
+              return `Operación #${items[0].label} — ${m.fecha}`;
+            },
+            label: (item) => {
+              const m = meta[item.dataIndex];
+              const signo = m.monto >= 0 ? "+" : "";
+              const encabezado = [m.tipo, m.simbolo !== "-" ? m.simbolo : "", m.lado !== "-" ? m.lado : ""].filter(Boolean).join(" ");
+              return [encabezado, `Monto: ${signo}${m.monto.toFixed(2)}`, `Saldo acumulado: ${item.formattedValue}`];
+            }
+          }
+        }
+      },
+      scales:{
+        x:{
+          ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 }, maxTicksLimit:20, autoSkip:true },
+          grid:{ color:gridColor },
+          title:{ display:true, text:"Secuencia de operación", color:"#8d93a0", font:{ family:"monospace", size:10 } }
+        },
+        y:{
+          ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 } },
+          grid:{ color:gridColor }
+        }
+      }
+    }
+  });
+}
+
 function renderCharts(rows){
   const { days, daily, cumulative } = aggregateByDay(rows);
 
@@ -598,13 +693,15 @@ function renderCharts(rows){
       fill:true, tension:0.25, pointRadius:0, borderWidth:2 }] },
     options: commonOpts
   });
+
+  renderSequenceChart(rows);
 }
 
 /* =========================================================
    Compartir gráficas vía la acción nativa de Android (Web Share API)
    ========================================================= */
 async function shareCharts(){
-  if(!dailyChart || !cumulativeChart){
+  if(!dailyChart || !cumulativeChart || !sequenceChart){
     alert("Primero descarga el histórico para generar las gráficas.");
     return;
   }
@@ -615,13 +712,14 @@ async function shareCharts(){
   try{
     const c1 = document.getElementById("chartDaily");
     const c2 = document.getElementById("chartCumulative");
+    const c3 = document.getElementById("chartSequence");
     const padding = 24;
     const labelH = 34;
 
-    // Lienzo combinado: ambas gráficas apiladas, con fondo y títulos
+    // Lienzo combinado: las tres gráficas apiladas, con fondo y títulos
     const combined = document.createElement("canvas");
-    combined.width = Math.max(c1.width, c2.width) + padding * 2;
-    combined.height = c1.height + c2.height + labelH * 2 + padding * 3;
+    combined.width = Math.max(c1.width, c2.width, c3.width) + padding * 2;
+    combined.height = c1.height + c2.height + c3.height + labelH * 3 + padding * 4;
     const ctx = combined.getContext("2d");
 
     ctx.fillStyle = "#14161a";
@@ -635,6 +733,10 @@ async function shareCharts(){
     const secondY = padding + labelH + c1.height + padding;
     ctx.fillText("SALDO ACUMULADO", padding, secondY + 14);
     ctx.drawImage(c2, padding, secondY + labelH);
+
+    const thirdY = secondY + labelH + c2.height + padding;
+    ctx.fillText("SECUENCIA DE OPERACIONES — IMPACTO EN EL SALDO", padding, thirdY + 14);
+    ctx.drawImage(c3, padding, thirdY + labelH);
 
     combined.toBlob(async (blob)=>{
       const stamp = new Date().toISOString().slice(0,10);
