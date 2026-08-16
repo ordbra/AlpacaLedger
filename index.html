@@ -47,6 +47,19 @@
   .status-pill.live{color:var(--red);border-color:#4a2222;background:#241414;}
   .status-pill.paper{color:var(--amber);border-color:var(--amber-dim);background:#241b0c;}
   .topbar-right{display:flex;align-items:center;gap:10px;}
+  .acctbtn{font-family:var(--mono);font-size:11px;letter-spacing:0.05em;border-radius:20px;padding:6px 12px;text-transform:uppercase;}
+
+  /* ---------- Modal gestión de cuentas ---------- */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
+  .modal-card{max-height:85vh;overflow:auto;}
+  .acct-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);}
+  .acct-row:last-child{border-bottom:none;}
+  .acct-info{display:flex;align-items:center;gap:10px;}
+  .acct-name{font-size:13.5px;}
+  .acct-actions{display:flex;gap:6px;align-items:center;}
+  .acct-active{font-size:11px;color:var(--green);font-family:var(--mono);}
+  button.sm{padding:5px 9px;font-size:12px;}
+  .modal-card h3.section{font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin:20px 0 12px;border-top:1px solid var(--line);padding-top:18px;}
 
   /* ---------- Botones ---------- */
   button{
@@ -162,7 +175,7 @@
       <div class="brand-text"><b>LEDGER</b> · alpaca activity terminal</div>
     </div>
     <div class="topbar-right">
-      <span id="acctBadge" class="status-pill" style="display:none;"></span>
+      <button id="acctSwitchBtn" class="ghost acctbtn" style="display:none;" onclick="openAcctModal()"></button>
       <button id="lockBtn" class="ghost" style="display:none;" onclick="lockSession()">Bloquear</button>
     </div>
   </div>
@@ -173,6 +186,10 @@
       <h2>Configurar credenciales</h2>
       <p class="sub">Tus credenciales se cifran en este dispositivo con AES-256, usando una clave derivada de tu PIN. Nunca salen de tu navegador salvo hacia Alpaca directamente.</p>
 
+      <div class="field">
+        <label>Nombre de la cuenta</label>
+        <input type="text" id="setupName" autocomplete="off" placeholder="p. ej. Cuenta principal">
+      </div>
       <div class="field">
         <label>API Key ID</label>
         <input type="text" id="setupKeyId" autocomplete="off" spellcheck="false">
@@ -202,7 +219,7 @@
 
     <div class="card" id="unlockCard" style="display:none;">
       <h2>Desbloquear</h2>
-      <p class="sub">Ingresa tu PIN para descifrar las credenciales guardadas en este dispositivo.</p>
+      <p class="sub">Ingresa tu PIN para descifrar las cuentas guardadas en este dispositivo.</p>
       <div class="field">
         <label>PIN</label>
         <input type="password" id="unlockPin" inputmode="numeric" autocomplete="off" autofocus>
@@ -210,7 +227,7 @@
       <div class="errmsg" id="unlockErr"></div>
       <button class="primary" onclick="handleUnlock()">Desbloquear</button>
       <div class="switch-mode">
-        <button class="link" onclick="forgetCredentials()">Olvidar credenciales guardadas</button>
+        <button class="link" onclick="forgetCredentials()">Olvidar todas las cuentas guardadas</button>
       </div>
     </div>
   </div>
@@ -280,7 +297,44 @@
 
     <div class="footer">
       <span>Las credenciales quedan cifradas en este dispositivo y solo se envían directo a Alpaca por HTTPS.</span>
-      <button class="link" onclick="forgetCredentials()">Olvidar credenciales guardadas</button>
+      <span>
+        <button class="link" onclick="openAcctModal()">Gestionar cuentas</button>
+        &nbsp;·&nbsp;
+        <button class="link" onclick="forgetCredentials()">Olvidar todas las cuentas guardadas</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: GESTIÓN DE CUENTAS ================= -->
+  <div id="acctModalOverlay" class="modal-overlay" style="display:none;">
+    <div class="card modal-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <h2 style="margin:0;">Cuentas</h2>
+        <button class="link" onclick="closeAcctModal()">Cerrar</button>
+      </div>
+      <p class="sub">Todas cifradas bajo el mismo PIN de este dispositivo.</p>
+
+      <div id="acctList"></div>
+
+      <h3 class="section">Agregar cuenta</h3>
+      <div class="field">
+        <label>Nombre</label>
+        <input type="text" id="newAcctName" autocomplete="off" placeholder="p. ej. Cuenta paper #2">
+      </div>
+      <div class="field">
+        <label>API Key ID</label>
+        <input type="text" id="newAcctKeyId" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>API Secret Key</label>
+        <input type="password" id="newAcctSecret" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="toggle-row">
+        <label class="switch"><input type="checkbox" id="newAcctLive"><span class="slider"></span></label>
+        <span id="newAcctLiveLabel">Cuenta paper trading</span>
+      </div>
+      <div class="errmsg" id="newAcctErr"></div>
+      <button class="primary" onclick="addAccount()">Agregar cuenta</button>
     </div>
   </div>
 
@@ -299,12 +353,15 @@ window.addEventListener("DOMContentLoaded", ()=>{
 });
 
 /* =========================================================
-   Almacenamiento cifrado de credenciales (AES-GCM + PBKDF2)
+   Almacenamiento cifrado de cuentas (AES-GCM + PBKDF2)
+   Todas las cuentas viven en un solo vault cifrado con el mismo PIN.
    ========================================================= */
 const STORAGE_KEY = "ledger_alpaca_vault_v1";
+const ACTIVE_KEY = "ledger_alpaca_active_id"; // no sensible: solo un id, no credenciales
 
 function bufToB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
 function b64ToBuf(b64){ const bin = atob(b64); const arr = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
+function escapeHtml(str){ return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 async function deriveKey(pin, saltBuf){
   const enc = new TextEncoder();
@@ -318,30 +375,27 @@ async function deriveKey(pin, saltBuf){
   );
 }
 
-async function encryptVault(pin, dataObj){
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(pin, salt);
-  const enc = new TextEncoder();
-  const cipher = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, enc.encode(JSON.stringify(dataObj)));
-  return { salt: bufToB64(salt), iv: bufToB64(iv), data: bufToB64(cipher) };
-}
-
-async function decryptVault(pin, vault){
-  const salt = new Uint8Array(b64ToBuf(vault.salt));
-  const iv = new Uint8Array(b64ToBuf(vault.iv));
-  const key = await deriveKey(pin, salt);
-  const dec = new TextDecoder();
-  const plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, b64ToBuf(vault.data));
-  return JSON.parse(dec.decode(plain));
-}
-
 function getStoredVault(){
   const raw = localStorage.getItem(STORAGE_KEY);
   return raw ? JSON.parse(raw) : null;
 }
 
-let creds = null; // { keyId, secret, live } — solo en memoria mientras la sesión está desbloqueada
+// Estado en memoria mientras la sesión está desbloqueada
+let accounts = [];          // [{ id, name, keyId, secret, live }, ...]
+let activeAccountId = null;
+let vaultKey = null;        // CryptoKey derivada del PIN — se reutiliza para re-cifrar sin pedir el PIN de nuevo
+let vaultSaltB64 = null;    // salt original del vault, se conserva para cada re-escritura
+let activitiesCache = {};   // { [accountId]: allActivities[] } — evita re-descargar al cambiar de cuenta
+
+function activeAccount(){ return accounts.find(a => a.id === activeAccountId); }
+
+async function saveVault(){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const cipher = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, vaultKey, enc.encode(JSON.stringify(accounts)));
+  const vaultObj = { salt: vaultSaltB64, iv: bufToB64(iv), data: bufToB64(cipher) };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(vaultObj));
+}
 
 /* =========================================================
    Flujo de bloqueo / desbloqueo / setup
@@ -354,8 +408,12 @@ function initLockScreen(){
 document.getElementById("setupLive").addEventListener("change", (e)=>{
   document.getElementById("setupLiveLabel").textContent = e.target.checked ? "Cuenta LIVE (dinero real)" : "Cuenta paper trading";
 });
+document.getElementById("newAcctLive").addEventListener("change", (e)=>{
+  document.getElementById("newAcctLiveLabel").textContent = e.target.checked ? "Cuenta LIVE (dinero real)" : "Cuenta paper trading";
+});
 
 async function handleSetupSave(){
+  const name = document.getElementById("setupName").value.trim() || "Cuenta principal";
   const keyId = document.getElementById("setupKeyId").value.trim();
   const secret = document.getElementById("setupSecret").value.trim();
   const live = document.getElementById("setupLive").checked;
@@ -368,9 +426,14 @@ async function handleSetupSave(){
   if(pin.length < 4){ err.textContent = "El PIN debe tener al menos 4 dígitos."; return; }
   if(pin !== pinConfirm){ err.textContent = "Los PIN no coinciden."; return; }
 
-  const vault = await encryptVault(pin, { keyId, secret, live });
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(vault));
-  creds = { keyId, secret, live };
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  vaultKey = await deriveKey(pin, salt);
+  vaultSaltB64 = bufToB64(salt);
+  accounts = [{ id: crypto.randomUUID(), name, keyId, secret, live }];
+  await saveVault();
+
+  activeAccountId = accounts[0].id;
+  localStorage.setItem(ACTIVE_KEY, activeAccountId);
   enterDashboard();
 }
 
@@ -379,26 +442,46 @@ async function handleUnlock(){
   const err = document.getElementById("unlockErr");
   err.textContent = "";
   const vault = getStoredVault();
+
   try{
-    const data = await decryptVault(pin, vault);
-    creds = data;
+    const salt = new Uint8Array(b64ToBuf(vault.salt));
+    const iv = new Uint8Array(b64ToBuf(vault.iv));
+    const key = await deriveKey(pin, salt);
+    const dec = new TextDecoder();
+    const plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, b64ToBuf(vault.data));
+    let data = JSON.parse(dec.decode(plain));
+
+    // Migración: vaults creados antes del soporte multi-cuenta guardaban un solo objeto
+    if(!Array.isArray(data)){
+      data = [{ id: crypto.randomUUID(), name: "Cuenta principal", keyId: data.keyId, secret: data.secret, live: data.live }];
+    }
+
+    vaultKey = key;
+    vaultSaltB64 = vault.salt;
+    accounts = data;
+
+    const savedActive = localStorage.getItem(ACTIVE_KEY);
+    activeAccountId = accounts.find(a => a.id === savedActive) ? savedActive : accounts[0].id;
+
     enterDashboard();
   }catch(e){
     err.textContent = "PIN incorrecto.";
+    vaultKey = null; vaultSaltB64 = null;
   }
 }
 
 document.getElementById("unlockPin")?.addEventListener("keydown", (e)=>{ if(e.key==="Enter") handleUnlock(); });
 
 function forgetCredentials(){
-  if(!confirm("Esto borrará las credenciales guardadas en este dispositivo. ¿Continuar?")) return;
+  if(!confirm("Esto borrará TODAS las cuentas guardadas en este dispositivo. ¿Continuar?")) return;
   localStorage.removeItem(STORAGE_KEY);
-  creds = null;
+  localStorage.removeItem(ACTIVE_KEY);
+  accounts = []; activeAccountId = null; vaultKey = null; vaultSaltB64 = null;
   location.reload();
 }
 
 function lockSession(){
-  creds = null;
+  accounts = []; activeAccountId = null; vaultKey = null; vaultSaltB64 = null; activitiesCache = {};
   location.reload();
 }
 
@@ -406,10 +489,9 @@ function enterDashboard(){
   document.getElementById("lockwrap").style.display = "none";
   document.getElementById("wrap").classList.add("active");
   document.getElementById("lockBtn").style.display = "inline-block";
-  const badge = document.getElementById("acctBadge");
-  badge.style.display = "inline-block";
-  badge.textContent = creds.live ? "LIVE" : "PAPER";
-  badge.className = "status-pill " + (creds.live ? "live" : "paper");
+  document.getElementById("acctSwitchBtn").style.display = "inline-block";
+  updateAccountUI();
+  loadCachedOrClear();
 
   const today = new Date();
   const monthAgo = new Date(); monthAgo.setDate(monthAgo.getDate() - 30);
@@ -417,7 +499,137 @@ function enterDashboard(){
   document.getElementById("fDesde").value = monthAgo.toISOString().slice(0,10);
 }
 
+function updateAccountUI(){
+  const acc = activeAccount();
+  if(!acc) return;
+  const btn = document.getElementById("acctSwitchBtn");
+  btn.textContent = `${acc.name} · ${acc.live ? "LIVE" : "PAPER"}`;
+  btn.style.borderColor = acc.live ? "#4a2222" : "var(--amber-dim)";
+  btn.style.color = acc.live ? "var(--red)" : "var(--amber)";
+}
+
+function loadCachedOrClear(){
+  const cached = activitiesCache[activeAccountId];
+  if(cached){
+    allActivities = cached;
+    populateFilterOptions();
+    applyFilters();
+    document.getElementById("statusLine").className = "status-line";
+    document.getElementById("statusLine").textContent = `Mostrando datos ya descargados de "${activeAccount().name}" en esta sesión.`;
+  } else {
+    allActivities = []; filteredActivities = [];
+    document.getElementById("fTipo").innerHTML = '<option value="">Todos</option>';
+    document.getElementById("fSimbolo").innerHTML = '<option value="">Todos</option>';
+    renderTable([]);
+    if(dailyChart){ dailyChart.destroy(); dailyChart = null; }
+    if(cumulativeChart){ cumulativeChart.destroy(); cumulativeChart = null; }
+    if(sequenceChart){ sequenceChart.destroy(); sequenceChart = null; }
+    document.getElementById("statusLine").className = "status-line";
+    document.getElementById("statusLine").textContent = `Cuenta "${activeAccount().name}" seleccionada — presiona "Descargar histórico".`;
+  }
+}
+
 initLockScreen();
+
+/* =========================================================
+   Gestión de cuentas (modal)
+   ========================================================= */
+function openAcctModal(){
+  renderAcctList();
+  document.getElementById("acctModalOverlay").style.display = "flex";
+}
+function closeAcctModal(){
+  document.getElementById("acctModalOverlay").style.display = "none";
+  document.getElementById("newAcctErr").textContent = "";
+}
+
+function renderAcctList(){
+  const list = document.getElementById("acctList");
+  list.innerHTML = accounts.map(a => `
+    <div class="acct-row" data-id="${a.id}">
+      <div class="acct-info">
+        <div class="acct-name">${escapeHtml(a.name)}</div>
+        <span class="status-pill ${a.live ? "live" : "paper"}">${a.live ? "LIVE" : "PAPER"}</span>
+      </div>
+      <div class="acct-actions">
+        ${a.id === activeAccountId ? '<span class="acct-active">En uso</span>' : '<button class="ghost sm" data-action="use">Usar</button>'}
+        <button class="ghost sm" data-action="rename">Renombrar</button>
+        <button class="ghost sm" data-action="delete">Eliminar</button>
+      </div>
+    </div>`).join("");
+}
+
+document.getElementById("acctList").addEventListener("click", (e)=>{
+  const btn = e.target.closest("button[data-action]");
+  if(!btn) return;
+  const row = e.target.closest(".acct-row");
+  const id = row.dataset.id;
+  if(btn.dataset.action === "use") switchAccount(id);
+  if(btn.dataset.action === "rename") renameAccount(id);
+  if(btn.dataset.action === "delete") deleteAccount(id);
+});
+
+function switchAccount(id){
+  if(id === activeAccountId){ closeAcctModal(); return; }
+  activeAccountId = id;
+  localStorage.setItem(ACTIVE_KEY, id);
+  updateAccountUI();
+  loadCachedOrClear();
+  closeAcctModal();
+}
+
+function renameAccount(id){
+  const acc = accounts.find(a => a.id === id);
+  const name = prompt("Nuevo nombre para la cuenta:", acc.name);
+  if(!name || !name.trim()) return;
+  acc.name = name.trim();
+  saveVault().then(()=>{ renderAcctList(); updateAccountUI(); });
+}
+
+function deleteAccount(id){
+  if(accounts.length === 1){
+    alert("No puedes eliminar la única cuenta guardada. Usa \"Olvidar todas las cuentas\" si quieres empezar de cero.");
+    return;
+  }
+  const acc = accounts.find(a => a.id === id);
+  if(!confirm(`¿Eliminar la cuenta "${acc.name}"? Esto borra sus credenciales guardadas de este dispositivo.`)) return;
+
+  accounts = accounts.filter(a => a.id !== id);
+  delete activitiesCache[id];
+
+  saveVault().then(()=>{
+    if(activeAccountId === id){
+      switchAccount(accounts[0].id);
+    } else {
+      renderAcctList();
+    }
+  });
+}
+
+async function addAccount(){
+  const name = document.getElementById("newAcctName").value.trim();
+  const keyId = document.getElementById("newAcctKeyId").value.trim();
+  const secret = document.getElementById("newAcctSecret").value.trim();
+  const live = document.getElementById("newAcctLive").checked;
+  const err = document.getElementById("newAcctErr");
+  err.textContent = "";
+
+  if(!name){ err.textContent = "Ponle un nombre a la cuenta."; return; }
+  if(!keyId || !secret){ err.textContent = "Captura API Key ID y Secret Key."; return; }
+  if(accounts.some(a => a.name.toLowerCase() === name.toLowerCase())){ err.textContent = "Ya existe una cuenta con ese nombre."; return; }
+
+  const newAcc = { id: crypto.randomUUID(), name, keyId, secret, live };
+  accounts.push(newAcc);
+  await saveVault();
+
+  document.getElementById("newAcctName").value = "";
+  document.getElementById("newAcctKeyId").value = "";
+  document.getElementById("newAcctSecret").value = "";
+  document.getElementById("newAcctLive").checked = false;
+  document.getElementById("newAcctLiveLabel").textContent = "Cuenta paper trading";
+
+  switchAccount(newAcc.id);
+}
 
 /* =========================================================
    Descarga del histórico de Alpaca (paginado)
@@ -436,8 +648,9 @@ async function fetchActivities(){
   status.className = "status-line";
   status.innerHTML = '<span class="spinner"></span>Conectando con Alpaca...';
 
-  const baseUrl = creds.live ? "https://api.alpaca.markets" : "https://paper-api.alpaca.markets";
-  const headers = { "APCA-API-KEY-ID": creds.keyId, "APCA-API-SECRET-KEY": creds.secret };
+  const acc = activeAccount();
+  const baseUrl = acc.live ? "https://api.alpaca.markets" : "https://paper-api.alpaca.markets";
+  const headers = { "APCA-API-KEY-ID": acc.keyId, "APCA-API-SECRET-KEY": acc.secret };
 
   let results = [];
   let pageToken = null;
@@ -467,6 +680,7 @@ async function fetchActivities(){
     } while(true);
 
     allActivities = results;
+    activitiesCache[activeAccountId] = allActivities;
     status.className = "status-line ok";
     status.textContent = `${results.length} registros descargados correctamente.`;
     populateFilterOptions();
@@ -747,7 +961,7 @@ async function shareCharts(){
           await navigator.share({
             files: [file],
             title: "Movimientos Alpaca",
-            text: `Gráficas de actividad de cuenta ${creds.live ? "LIVE" : "PAPER"} — ${stamp}`
+            text: `Gráficas de actividad de cuenta "${activeAccount().name}" (${activeAccount().live ? "LIVE" : "PAPER"}) — ${stamp}`
           });
         }catch(e){
           if(e.name !== "AbortError") alert("No se pudo compartir: " + e.message);
