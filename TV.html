@@ -1,0 +1,23 @@
+<button id="test">Probar TradingView</button>
+<pre id="result"></pre>
+
+<script>
+document.getElementById("test").onclick = async () => {
+    const result = document.getElementById("result");
+
+    try {
+        const response = await fetch(
+            "https://es.tradingview.com/watchlists/322136423/"
+        );
+
+        const html = await response.text();
+
+        result.textContent =
+            `OK\nHTTP: ${response.status}\nBytes: ${html.length}`;
+    }
+    catch (error) {
+        result.textContent =
+            `ERROR\n${error}`;
+    }
+};
+</script>
