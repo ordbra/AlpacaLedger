@@ -1,32 +1,241 @@
-<button id="test">Probar TradingView</button>
-<pre id="result"></pre>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<img
-  src="https://finviz.com/chart.ashx?t=NVDA&ty=c&ta=1&p=d"
-  onload="console.log('Finviz OK')"
-  onerror="console.log('Finviz ERROR')">
+    <title>Prueba Finviz - Copiar imagen</title>
 
-<img
-  loading="lazy"
-  src="https://finviz.com/chart.ashx?t=NVDA&ty=c&ta=1&p=d">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 30px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+        }
+
+        img {
+            max-width: 100%;
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 18px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            background: #eee;
+            white-space: pre-wrap;
+            font-family: Consolas, monospace;
+        }
+
+        canvas {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h2>Prueba de copia de gráfico Finviz</h2>
+
+    <p>
+        La imagen debe mostrarse primero. Después presiona
+        <strong>Copiar imagen</strong>.
+    </p>
+
+    <img
+        id="finvizImage"
+        crossorigin="anonymous"
+        src="https://finviz.com/chart.ashx?t=NVDA&ty=c&ta=1&p=d"
+        alt="Gráfico Finviz">
+
+    <br>
+
+    <button id="copyButton">
+        Copiar imagen
+    </button>
+
+    <button id="testButton">
+        Probar canvas
+    </button>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="status">
+        Esperando prueba...
+    </div>
+
+</div>
 
 <script>
-document.getElementById("test").onclick = async () => {
-    const result = document.getElementById("result");
 
-    try {
-        const response = await fetch(
-            "https://es.tradingview.com/watchlists/322136423/"
-        );
+const image = document.getElementById("finvizImage");
+const canvas = document.getElementById("canvas");
+const status = document.getElementById("status");
 
-        const html = await response.text();
+function writeStatus(message) {
+    status.textContent =
+        new Date().toLocaleTimeString() +
+        "\n\n" +
+        message;
+}
 
-        result.textContent =
-            `OK\nHTTP: ${response.status}\nBytes: ${html.length}`;
+image.addEventListener("load", () => {
+
+    writeStatus(
+        "OK: La imagen de Finviz se cargó correctamente.\n" +
+        `Tamaño natural: ${image.naturalWidth} x ${image.naturalHeight}`
+    );
+
+});
+
+image.addEventListener("error", () => {
+
+    writeStatus(
+        "ERROR: La imagen de Finviz no pudo cargarse."
+    );
+
+});
+
+
+document.getElementById("testButton").addEventListener(
+    "click",
+    () => {
+
+        try {
+
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+
+            const ctx = canvas.getContext("2d");
+
+            ctx.drawImage(image, 0, 0);
+
+            /*
+             * Esta operación fuerza al navegador
+             * a comprobar si el canvas está contaminado
+             * por una imagen de otro origen.
+             */
+
+            const dataUrl = canvas.toDataURL("image/png");
+
+            writeStatus(
+                "OK: Canvas accesible.\n\n" +
+                "La imagen puede ser leída desde JavaScript.\n\n" +
+                `Data URL generado: ${dataUrl.length} caracteres.`
+            );
+
+        }
+        catch (error) {
+
+            writeStatus(
+                "ERROR AL LEER CANVAS\n\n" +
+                error.name + "\n" +
+                error.message + "\n\n" +
+                "Si aparece SecurityError o 'tainted canvas', " +
+                "Finviz permite mostrar la imagen pero no leerla desde JavaScript."
+            );
+
+            console.error(error);
+        }
+
     }
-    catch (error) {
-        result.textContent =
-            `ERROR\n${error}`;
+);
+
+
+document.getElementById("copyButton").addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            if (!navigator.clipboard) {
+                throw new Error(
+                    "Clipboard API no está disponible."
+                );
+            }
+
+            if (!window.ClipboardItem) {
+                throw new Error(
+                    "ClipboardItem no está disponible."
+                );
+            }
+
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+
+            const ctx = canvas.getContext("2d");
+
+            ctx.drawImage(image, 0, 0);
+
+            const blob = await new Promise(
+                (resolve, reject) => {
+
+                    canvas.toBlob(
+                        result => {
+
+                            if (result) {
+                                resolve(result);
+                            }
+                            else {
+                                reject(
+                                    new Error(
+                                        "canvas.toBlob() no produjo una imagen."
+                                    )
+                                );
+                            }
+
+                        },
+                        "image/png"
+                    );
+
+                }
+            );
+
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    "image/png": blob
+                })
+            ]);
+
+            writeStatus(
+                "OK\n\n" +
+                "La imagen de Finviz fue copiada al portapapeles.\n\n" +
+                "Prueba pegarla ahora en Paint, Word o cualquier otra aplicación."
+            );
+
+        }
+        catch (error) {
+
+            writeStatus(
+                "ERROR AL COPIAR\n\n" +
+                error.name + "\n" +
+                error.message + "\n\n" +
+                "Abre también DevTools (F12) para revisar la consola."
+            );
+
+            console.error(error);
+        }
+
     }
-};
+);
+
 </script>
+
+</body>
+</html>
