@@ -1,6 +1,15 @@
 <button id="test">Probar TradingView</button>
 <pre id="result"></pre>
 
+<img
+  src="https://finviz.com/chart.ashx?t=NVDA&ty=c&ta=1&p=d"
+  onload="console.log('Finviz OK')"
+  onerror="console.log('Finviz ERROR')">
+
+<img
+  loading="lazy"
+  src="https://finviz.com/chart.ashx?t=NVDA&ty=c&ta=1&p=d">
+
 <script>
 document.getElementById("test").onclick = async () => {
     const result = document.getElementById("result");
