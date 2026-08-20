@@ -732,6 +732,24 @@ function applyFilters(){
 }
 
 /* =========================================================
+   Cálculo del impacto monetario real de cada actividad
+   Alpaca NO llena net_amount para operaciones de trading (FILL/PARTIAL_FILL) —
+   ese campo solo existe en actividades no-trade (dividendos, comisiones, etc.).
+   Para FILL hay que calcularlo nosotros: cantidad × precio, con signo según el lado.
+   ========================================================= */
+function getMontoImpacto(a){
+  if(a.activity_type === "FILL" || a.activity_type === "PARTIAL_FILL"){
+    const qty = parseFloat(a.qty || 0);
+    const price = parseFloat(a.price || 0);
+    if(isNaN(qty) || isNaN(price)) return 0;
+    const monto = qty * price;
+    return a.side === "sell" ? monto : -monto; // venta: entra dinero (+) · compra: sale dinero (-)
+  }
+  const m = parseFloat(a.net_amount || 0);
+  return isNaN(m) ? 0 : m;
+}
+
+/* =========================================================
    Tabla
    ========================================================= */
 function tagClass(tipo){
@@ -755,7 +773,7 @@ function renderTable(rows){
   empty.style.display = "none";
 
   body.innerHTML = rows.map(a=>{
-    const monto = parseFloat(a.net_amount || 0);
+    const monto = getMontoImpacto(a);
     const montoClass = monto > 0 ? "amt-pos" : (monto < 0 ? "amt-neg" : "");
     const fecha = (a.transaction_time || a.date || "").toString().slice(0,19).replace("T"," ");
     return `<tr>
@@ -777,7 +795,7 @@ function renderTable(rows){
 function aggregateByDay(rows){
   const map = {};
   rows.forEach(a=>{
-    const monto = parseFloat(a.net_amount || 0);
+    const monto = getMontoImpacto(a);
     if(isNaN(monto)) return;
     const day = (a.transaction_time || a.date || "").toString().slice(0,10);
     if(!day) return;
@@ -798,7 +816,7 @@ function aggregateBySequence(rows){
   // Ordena cronológicamente ascendente (la más antigua primero) para que la secuencia tenga sentido
   const sorted = rows
     .filter(a => {
-      const m = parseFloat(a.net_amount || 0);
+      const m = getMontoImpacto(a);
       return !isNaN(m) && (a.transaction_time || a.date);
     })
     .sort((a,b) => new Date(a.transaction_time || a.date) - new Date(b.transaction_time || b.date));
@@ -807,7 +825,7 @@ function aggregateBySequence(rows){
   const labels = [], values = [], meta = [];
 
   sorted.forEach((a, i) => {
-    const monto = parseFloat(a.net_amount || 0);
+    const monto = getMontoImpacto(a);
     acumulado += monto;
     labels.push(String(i + 1));
     values.push(Math.round(acumulado * 100) / 100);
@@ -1001,7 +1019,7 @@ function exportToExcel(){
     Lado: a.side || "",
     Cantidad: a.qty || "",
     Precio: a.price || "",
-    Monto: parseFloat(a.net_amount || 0),
+    Monto: getMontoImpacto(a),
     OrdenId: a.order_id || "",
     Descripcion: a.description || ""
   }));
