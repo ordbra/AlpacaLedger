@@ -301,6 +301,26 @@
       <p class="pnl-note">Calculado emparejando cada venta con las compras más antiguas del mismo símbolo (FIFO), solo dentro del rango de fechas descargado. No incluye posiciones que aún no has vendido (ganancia/pérdida no realizada).</p>
     </div>
 
+    <div class="chartcard full" style="margin-bottom:16px;">
+      <h3>Equity real de la cuenta (efectivo + posiciones abiertas)</h3>
+      <div class="statrow">
+        <div class="statbox">
+          <div class="label">Equity actual</div>
+          <div class="value" id="eqCurrentValue">—</div>
+        </div>
+        <div class="statbox">
+          <div class="label">P&amp;L del periodo</div>
+          <div class="value" id="eqPnlValue">—</div>
+        </div>
+        <div class="statbox">
+          <div class="label">P&amp;L % del periodo</div>
+          <div class="value" id="eqPnlPctValue">—</div>
+        </div>
+      </div>
+      <div class="canvaswrap tall"><canvas id="chartEquity"></canvas></div>
+      <p class="pnl-note" id="eqNote">Este valor viene directo de Alpaca (no calculado por nosotros) e incluye tus posiciones abiertas a precio de mercado, así que sí refleja tu ganancia/pérdida real total, no solo la realizada.</p>
+    </div>
+
     <div class="tablecard">
       <div class="tablecard-head">
         <div class="field">
@@ -547,6 +567,7 @@ function loadCachedOrClear(){
     allActivities = cached;
     populateFilterOptions();
     applyFilters();
+    renderEquityChart(equityCache[activeAccountId] || null);
     document.getElementById("statusLine").className = "status-line";
     document.getElementById("statusLine").textContent = `Mostrando datos ya descargados de "${activeAccount().name}" en esta sesión.`;
   } else {
@@ -565,6 +586,7 @@ function loadCachedOrClear(){
     document.getElementById("pnlBestValue").className = "value";
     document.getElementById("pnlWorstValue").textContent = "—";
     document.getElementById("pnlWorstValue").className = "value";
+    renderEquityChart(null);
     document.getElementById("statusLine").className = "status-line";
     document.getElementById("statusLine").textContent = `Cuenta "${activeAccount().name}" seleccionada — presiona "Descargar histórico".`;
   }
@@ -678,6 +700,87 @@ async function addAccount(){
 let allActivities = [];
 let filteredActivities = [];
 let dailyChart, cumulativeChart;
+let equityCache = {}; // { [accountId]: { labels, equity, pnl, pnlPct, current, periodPnl, periodPnlPct } }
+let equityChart;
+
+async function fetchEquityHistory(desde, hasta){
+  const acc = activeAccount();
+  const baseUrl = acc.live ? "https://api.alpaca.markets" : "https://paper-api.alpaca.markets";
+  const headers = { "APCA-API-KEY-ID": acc.keyId, "APCA-API-SECRET-KEY": acc.secret };
+
+  const hastaDate = hasta ? new Date(hasta + "T23:59:59Z") : new Date();
+  const desdeDate = desde ? new Date(desde + "T00:00:00Z") : null;
+  let days = 30;
+  if(desdeDate){ days = Math.max(1, Math.ceil((hastaDate - desdeDate) / 86400000)); }
+  const timeframe = days <= 5 ? "1H" : "1D";
+
+  const params = new URLSearchParams({
+    period: `${days}D`,
+    timeframe,
+    date_end: hastaDate.toISOString().slice(0,10),
+    extended_hours: "true"
+  });
+
+  const resp = await fetch(`${baseUrl}/v2/account/portfolio/history?${params.toString()}`, { headers });
+  if(!resp.ok){
+    const body = await resp.text();
+    throw new Error(`HTTP ${resp.status}: ${body.slice(0,200)}`);
+  }
+  const data = await resp.json();
+  if(!data.timestamp || !data.timestamp.length) return null;
+
+  const labels = data.timestamp.map(ts => {
+    const ms = ts > 1e12 ? ts : ts * 1000; // la API a veces regresa segundos, a veces milisegundos
+    const d = new Date(ms);
+    return timeframe === "1D" ? d.toISOString().slice(0,10) : d.toISOString().slice(0,16).replace("T"," ");
+  });
+
+  const equity = data.equity.map(v => Math.round(v*100)/100);
+  const pnl = data.profit_loss.map(v => Math.round(v*100)/100);
+  const pnlPct = data.profit_loss_pct.map(v => Math.round(v*10000)/100);
+
+  const current = equity[equity.length - 1];
+  const periodPnl = pnl[pnl.length - 1];
+  const periodPnlPct = pnlPct[pnlPct.length - 1];
+
+  return { labels, equity, pnl, pnlPct, current, periodPnl, periodPnlPct };
+}
+
+function renderEquityChart(eq){
+  const currentEl = document.getElementById("eqCurrentValue");
+  const pnlEl = document.getElementById("eqPnlValue");
+  const pnlPctEl = document.getElementById("eqPnlPctValue");
+
+  if(!eq){
+    currentEl.textContent = "—"; currentEl.className = "value";
+    pnlEl.textContent = "—"; pnlEl.className = "value";
+    pnlPctEl.textContent = "—"; pnlPctEl.className = "value";
+    if(equityChart){ equityChart.destroy(); equityChart = null; }
+    return;
+  }
+
+  currentEl.textContent = eq.current.toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
+  currentEl.className = "value";
+  pnlEl.textContent = (eq.periodPnl >= 0 ? "+" : "") + eq.periodPnl.toFixed(2);
+  pnlEl.className = "value " + (eq.periodPnl > 0 ? "amt-pos" : (eq.periodPnl < 0 ? "amt-neg" : ""));
+  pnlPctEl.textContent = (eq.periodPnlPct >= 0 ? "+" : "") + eq.periodPnlPct.toFixed(2) + "%";
+  pnlPctEl.className = "value " + (eq.periodPnlPct > 0 ? "amt-pos" : (eq.periodPnlPct < 0 ? "amt-neg" : ""));
+
+  if(equityChart) equityChart.destroy();
+  equityChart = new Chart(document.getElementById("chartEquity"), {
+    type:"line",
+    data:{ labels: eq.labels, datasets:[{ data: eq.equity, borderColor:"#ffb020", backgroundColor:"rgba(255,176,32,0.12)",
+      fill:true, tension:0.2, pointRadius:0, borderWidth:2 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales:{
+        x:{ ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 }, maxTicksLimit:12, autoSkip:true }, grid:{ color:"#2c313a" } },
+        y:{ ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 } }, grid:{ color:"#2c313a" } }
+      }
+    }
+  });
+}
 
 async function fetchActivities(){
   const btn = document.getElementById("fetchBtn");
@@ -726,6 +829,17 @@ async function fetchActivities(){
     status.textContent = `${results.length} registros descargados correctamente.`;
     populateFilterOptions();
     applyFilters();
+
+    // La gráfica de equity real es independiente del histórico de actividades — si falla, no rompe lo demás
+    try{
+      const eq = await fetchEquityHistory(desde, hasta);
+      equityCache[activeAccountId] = eq;
+      renderEquityChart(eq);
+    }catch(eqErr){
+      document.getElementById("eqNote").textContent =
+        "No se pudo cargar el equity real desde Alpaca: " + eqErr.message;
+      renderEquityChart(null);
+    }
 
   }catch(e){
     status.className = "status-line err";
