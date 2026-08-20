@@ -133,6 +133,11 @@
   .chartcard h3{margin:0 0 12px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);font-weight:600;}
   .chartcard .canvaswrap{position:relative;height:220px;}
   .chartcard .canvaswrap.tall{height:280px;}
+  .statrow{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
+  .statbox{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:12px 16px;flex:1;min-width:150px;}
+  .statbox .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;font-family:var(--mono);}
+  .statbox .value{font-family:var(--mono);font-size:21px;font-weight:600;}
+  .pnl-note{font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:10px;}
 
   .tablecard{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
   .tablecard-head{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;padding:14px 16px;border-bottom:1px solid var(--line);}
@@ -270,6 +275,30 @@
     <div class="chartcard full" style="margin-bottom:16px;">
       <h3>Secuencia de operaciones — impacto en el saldo</h3>
       <div class="canvaswrap tall"><canvas id="chartSequence"></canvas></div>
+    </div>
+
+    <div class="chartcard full" style="margin-bottom:16px;">
+      <h3>Ganancia / Pérdida realizada</h3>
+      <div class="statrow">
+        <div class="statbox">
+          <div class="label">Total realizado</div>
+          <div class="value" id="pnlTotalValue">—</div>
+        </div>
+        <div class="statbox">
+          <div class="label">Operaciones cerradas</div>
+          <div class="value" id="pnlCountValue">—</div>
+        </div>
+        <div class="statbox">
+          <div class="label">Mejor símbolo</div>
+          <div class="value" id="pnlBestValue" style="font-size:15px;">—</div>
+        </div>
+        <div class="statbox">
+          <div class="label">Peor símbolo</div>
+          <div class="value" id="pnlWorstValue" style="font-size:15px;">—</div>
+        </div>
+      </div>
+      <div class="canvaswrap tall"><canvas id="chartPnL"></canvas></div>
+      <p class="pnl-note">Calculado emparejando cada venta con las compras más antiguas del mismo símbolo (FIFO), solo dentro del rango de fechas descargado. No incluye posiciones que aún no has vendido (ganancia/pérdida no realizada).</p>
     </div>
 
     <div class="tablecard">
@@ -528,6 +557,14 @@ function loadCachedOrClear(){
     if(dailyChart){ dailyChart.destroy(); dailyChart = null; }
     if(cumulativeChart){ cumulativeChart.destroy(); cumulativeChart = null; }
     if(sequenceChart){ sequenceChart.destroy(); sequenceChart = null; }
+    if(pnlChart){ pnlChart.destroy(); pnlChart = null; }
+    document.getElementById("pnlTotalValue").textContent = "—";
+    document.getElementById("pnlTotalValue").className = "value";
+    document.getElementById("pnlCountValue").textContent = "—";
+    document.getElementById("pnlBestValue").textContent = "—";
+    document.getElementById("pnlBestValue").className = "value";
+    document.getElementById("pnlWorstValue").textContent = "—";
+    document.getElementById("pnlWorstValue").className = "value";
     document.getElementById("statusLine").className = "status-line";
     document.getElementById("statusLine").textContent = `Cuenta "${activeAccount().name}" seleccionada — presiona "Descargar histórico".`;
   }
@@ -901,6 +938,102 @@ function renderSequenceChart(rows){
   });
 }
 
+/* =========================================================
+   Ganancia / Pérdida realizada (emparejamiento FIFO por símbolo)
+   Solo considera operaciones de compra/venta cerradas dentro del set actual.
+   ========================================================= */
+function computeRealizedPnL(rows){
+  const trades = rows
+    .filter(a => (a.activity_type === "FILL" || a.activity_type === "PARTIAL_FILL") && a.symbol)
+    .slice()
+    .sort((a,b) => new Date(a.transaction_time || a.date) - new Date(b.transaction_time || b.date));
+
+  const lots = {};              // symbol -> [{ qty, price }] (compras abiertas, más antigua primero)
+  const realizedBySymbol = {};  // symbol -> P&L acumulado
+  const pnlEvents = [];         // cada venta emparejada, en orden cronológico
+  let totalRealized = 0;
+
+  trades.forEach(a => {
+    const symbol = a.symbol;
+    const qty = parseFloat(a.qty || 0);
+    const price = parseFloat(a.price || 0);
+    if(isNaN(qty) || isNaN(price) || qty <= 0) return;
+    if(!lots[symbol]) lots[symbol] = [];
+
+    if(a.side === "buy"){
+      lots[symbol].push({ qty, price });
+    } else if(a.side === "sell"){
+      let remaining = qty;
+      let pnlThisTrade = 0;
+      let matched = 0;
+      while(remaining > 1e-9 && lots[symbol].length){
+        const lot = lots[symbol][0];
+        const matchQty = Math.min(remaining, lot.qty);
+        pnlThisTrade += (price - lot.price) * matchQty;
+        lot.qty -= matchQty;
+        remaining -= matchQty;
+        matched += matchQty;
+        if(lot.qty <= 1e-9) lots[symbol].shift();
+      }
+      if(matched > 0){
+        realizedBySymbol[symbol] = (realizedBySymbol[symbol] || 0) + pnlThisTrade;
+        totalRealized += pnlThisTrade;
+        pnlEvents.push({
+          fecha: (a.transaction_time || a.date || "").toString().slice(0,19).replace("T"," "),
+          symbol, qty: matched, pnl: pnlThisTrade
+        });
+      }
+      // Si remaining > 0 después del ciclo: venta sin compra previa dentro del rango descargado
+      // (posición abierta antes del rango, o venta en corto) — se excluye del cálculo de P&L.
+    }
+  });
+
+  return { totalRealized, realizedBySymbol, pnlEvents };
+}
+
+let pnlChart;
+
+function renderPnLSection(rows){
+  const { totalRealized, realizedBySymbol, pnlEvents } = computeRealizedPnL(rows);
+
+  const totalEl = document.getElementById("pnlTotalValue");
+  const rounded = Math.round(totalRealized * 100) / 100;
+  totalEl.textContent = (rounded >= 0 ? "+" : "") + rounded.toFixed(2);
+  totalEl.className = "value " + (rounded > 0 ? "amt-pos" : (rounded < 0 ? "amt-neg" : ""));
+
+  document.getElementById("pnlCountValue").textContent = pnlEvents.length;
+
+  const symbols = Object.keys(realizedBySymbol).sort((a,b) => realizedBySymbol[b] - realizedBySymbol[a]);
+  const values = symbols.map(s => Math.round(realizedBySymbol[s] * 100) / 100);
+
+  const bestEl = document.getElementById("pnlBestValue");
+  const worstEl = document.getElementById("pnlWorstValue");
+  if(symbols.length){
+    bestEl.textContent = `${symbols[0]} (${values[0] >= 0 ? "+" : ""}${values[0].toFixed(2)})`;
+    bestEl.className = "value amt-pos";
+    const last = symbols.length - 1;
+    worstEl.textContent = `${symbols[last]} (${values[last] >= 0 ? "+" : ""}${values[last].toFixed(2)})`;
+    worstEl.className = "value " + (values[last] < 0 ? "amt-neg" : "amt-pos");
+  } else {
+    bestEl.textContent = "—"; bestEl.className = "value";
+    worstEl.textContent = "—"; worstEl.className = "value";
+  }
+
+  if(pnlChart) pnlChart.destroy();
+  pnlChart = new Chart(document.getElementById("chartPnL"), {
+    type:"bar",
+    data:{ labels: symbols, datasets:[{ data: values, backgroundColor: values.map(v => v >= 0 ? "#3ecf8e" : "#ff6b6b") }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales:{
+        x:{ ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 } }, grid:{ color:"#2c313a" } },
+        y:{ ticks:{ color:"#8d93a0", font:{ family:"monospace", size:10 } }, grid:{ color:"#2c313a" } }
+      }
+    }
+  });
+}
+
 function renderCharts(rows){
   const { days, daily, cumulative } = aggregateByDay(rows);
 
@@ -931,6 +1064,7 @@ function renderCharts(rows){
   });
 
   renderSequenceChart(rows);
+  renderPnLSection(rows);
 }
 
 /* =========================================================
@@ -1027,9 +1161,16 @@ function exportToExcel(){
   const { days, daily, cumulative } = aggregateByDay(rows);
   const resumen = days.map((d,i)=>({ Fecha:d, MontoDelDia:daily[i], MontoAcumulado:cumulative[i] }));
 
+  const { totalRealized, realizedBySymbol, pnlEvents } = computeRealizedPnL(rows);
+  const pnlPorSimbolo = Object.keys(realizedBySymbol)
+    .sort((a,b) => realizedBySymbol[b] - realizedBySymbol[a])
+    .map(s => ({ Simbolo:s, GananciaPerdida: Math.round(realizedBySymbol[s]*100)/100 }));
+  pnlPorSimbolo.push({ Simbolo:"TOTAL", GananciaPerdida: Math.round(totalRealized*100)/100 });
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), "Historico");
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), "Resumen");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pnlPorSimbolo), "GananciaPerdida");
 
   const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"");
   XLSX.writeFile(wb, `AlpacaHistorico_${stamp}.xlsx`);
